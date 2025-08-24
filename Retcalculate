@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Earliest Retirement Finder</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 1100px; margin: 0 auto; padding: 20px; background:#f4f4f9;}
+  h1 { text-align:center; color:#333; }
+  .calculator { background:#fff; padding:20px; border-radius:8px; box-shadow:0 0 10px rgba(0,0,0,.08);}
+  .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap:14px;}
+  .form-group { display:flex; flex-direction:column; }
+  label { font-weight:600; color:#555; margin-bottom:6px;}
+  input[type="number"] { padding:8px; border:1px solid #ccc; border-radius:6px; }
+  button { background:#28a745; color:#fff; border:0; padding:12px 16px; border-radius:6px; cursor:pointer; font-size:16px;}
+  button:hover { background:#218838; }
+  #findButton { width:100%; margin-top:8px;}
+  #chartButton { background:#007bff; }
+  #chartButton:hover { background:#0056b3; }
+  #exportButton { background:#6c757d; }
+  #exportButton:hover { background:#5a6268; }
+  #result, #error { margin-top:16px; }
+  #result { display:none; background:#e9ecef; padding:14px; border-radius:6px;}
+  #error { color:#c62828; }
+  #chartContainer { display:none; margin-top:20px; }
+  canvas { max-width:100%; }
+  table { width:100%; border-collapse:collapse; margin-top:18px; background:#fff; }
+  th, td { text-align:right; padding:8px; border-bottom:1px solid #eee;}
+  th { background:#f8f9fa; position:sticky; top:0; }
+  td:first-child, th:first-child { text-align:left; }
+  .btn-row { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+  .note { font-size:13px; color:#666; margin-top:6px;}
+</style>
+</head>
+<body>
+  <h1>Earliest Retirement Finder</h1>
+  <div class="calculator">
+    <div class="grid">
+      <div class="form-group">
+        <label for="age">Current Age (years)</label>
+        <input type="number" id="age" min="0" max="100" step="0.5" required>
+      </div>
+      <div class="form-group">
+        <label for="lifeExpectancy">Plan To Age (life expectancy)</label>
+        <input type="number" id="lifeExpectancy" min="60" max="120" step="1" value="95" required>
+      </div>
+      <div class="form-group">
+        <label for="income">Yearly Income ($)</label>
+        <input type="number" id="income" min="0" step="100" required>
+      </div>
+      <div class="form-group">
+        <label for="savingsRate">Savings Rate (% of income)</label>
+        <input type="number" id="savingsRate" min="0" max="100" step="0.1" required>
+      </div>
+      <div class="form-group">
+        <label for="investments">Current Investments ($) — liquid/taxable</label>
+        <input type="number" id="investments" min="0" step="100" required>
+      </div>
+      <div class="form-group">
+        <label for="investmentCagr">Investments CAGR (%)</label>
+        <input type="number" id="investmentCagr" min="-100" max="100" step="0.1" required>
+      </div>
+      <div class="form-group">
+        <label for="otherAssets">Other Liquid Assets ($)</label>
+        <input type="number" id="otherAssets" min="0" step="100" required>
+      </div>
+      <div class="form-group">
+        <label for="otherAssetsCagr">Other Assets CAGR (%)</label>
+        <input type="number" id="otherAssetsCagr" min="-100" max="100" step="0.1" required>
+      </div>
+      <div class="form-group">
+        <label for="k401Balance">401k Balance ($)</label>
+        <input type="number" id="k401Balance" min="0" step="100" required>
+      </div>
+      <div class="form-group">
+        <label for="k401Cagr">401k CAGR (%)</label>
+        <input type="number" id="k401Cagr" min="-100" max="100" step="0.1" required>
+      </div>
+      <div class="form-group">
+        <label for="realEstate">Real Estate Value ($) — non-liquid</label>
+        <input type="number" id="realEstate" min="0" step="100" required>
+      </div>
+      <div class="form-group">
+        <label for="realEstateCagr">Real Estate CAGR (%)</label>
+        <input type="number" id="realEstateCagr" min="-100" max="100" step="0.1" required>
+      </div>
+      <div class="form-group">
+        <label for="inflationRate">Expected Inflation Rate (%)</label>
+        <input type="number" id="inflationRate" min="0" max="20" step="0.1" required>
+      </div>
+      <div class="form-group">
+        <label for="retirementSpending">Desired Annual Retirement Spending ($, today’s dollars)</label>
+        <input type="number" id="retirementSpending" min="0" step="100" required>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button id="findButton">Find Earliest Retirement</button>
+      <button id="chartButton" style="display:none;">Show Net Worth Chart</button>
+      <button id="exportButton" style="display:none;">Export Table (CSV)</button>
+    </div>
+
+    <div class="note">Rule set used: During retirement, spending is inflated each year from today. Withdrawals come from <strong>Investments → Other Assets → 401k (available at age 59.5)</strong>. Real estate is not sold to fund spending.</div>
+
+    <div id="error"></div>
+    <div id="result"></div>
+
+    <div id="chartContainer">
+      <canvas id="netWorthChart"></canvas>
+    </div>
+
+    <div id="tableContainer"></div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+let chartInstance = null;
+let lastPath = [];
+
+document.getElementById('findButton').addEventListener('click', (e) => {
+  e.preventDefault();
+  runFinder();
+});
+document.getElementById('chartButton').addEventListener('click', () => {
+  drawChart(lastPath);
+});
+document.getElementById('exportButton').addEventListener('click', () => {
+  exportCSV(lastPath);
+});
+
+function getInputs() {
+  return {
+    age: parseFloat(val('age')),
+    lifeExpectancy: parseFloat(val('lifeExpectancy')),
+    income: parseFloat(val('income')),
+    savingsRate: parseFloat(val('savingsRate')) / 100,
+    investments: parseFloat(val('investments')),
+    investmentCagr: parseFloat(val('investmentCagr')) / 100,
+    otherAssets: parseFloat(val('otherAssets')),
+    otherAssetsCagr: parseFloat(val('otherAssetsCagr')) / 100,
+    k401Balance: parseFloat(val('k401Balance')),
+    k401Cagr: parseFloat(val('k401Cagr')) / 100,
+    realEstate: parseFloat(val('realEstate')),
+    realEstateCagr: parseFloat(val('realEstateCagr')) / 100,
+    inflationRate: parseFloat(val('inflationRate')) / 100,
+    retirementSpending: parseFloat(val('retirementSpending'))
+  };
+  function val(id){ return document.getElementById(id).value; }
+}
+
+function validateInputs(i) {
+  const err = [];
+  if (isNaN(i.age) || i.age < 0 || i.age > 100) err.push('Age must be 0–100.');
+  if (isNaN(i.lifeExpectancy) || i.lifeExpectancy <= i.age) err.push('Life expectancy must exceed current age.');
+  if (isNaN(i.income) || i.income < 0) err.push('Income must be ≥ 0.');
+  if (isNaN(i.savingsRate) || i.savingsRate < 0 || i.savingsRate > 1) err.push('Savings rate must be 0–100%.');
+  const nums = ['investments','otherAssets','k401Balance','realEstate','retirementSpending'];
+  nums.forEach(k => { if (isNaN(i[k]) || i[k] < 0) err.push(`${labelize(k)} must be ≥ 0.`); });
+  const pcts = ['investmentCagr','otherAssetsCagr','k401Cagr','realEstateCagr','inflationRate'];
+  pcts.forEach(k => { if (isNaN(i[k])) err.push(`${labelize(k)} is required.`); });
+  return err;
+  function labelize(k){return k.replace(/([A-Z])/g,' $1').replace('k401','401k').replace(/^./,s=>s.toUpperCase());}
+}
+
+function runFinder() {
+  const errorDiv = document.getElementById('error');
+  const resultDiv = document.getElementById('result');
+  const chartBtn = document.getElementById('chartButton');
+  const exportBtn = document.getElementById('exportButton');
+  const tableContainer = document.getElementById('tableContainer');
+
+  errorDiv.textContent = '';
+  resultDiv.style.display = 'none';
+  chartBtn.style.display = 'none';
+  exportBtn.style.display = 'none';
+  tableContainer.innerHTML = '';
+  document.getElementById('chartContainer').style.display = 'none';
+  if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+
+  const i = getInputs();
+  const errs = validateInputs(i);
+  if (errs.length) { errorDiv.textContent = errs.join(' '); return; }
+
+  const maxYearsSearch = 50; // search window for retirement start
+  let foundPlan = null;
+
+  for (let startIn = 0; startIn <= maxYearsSearch; startIn++) {
+    const sim = simulatePlan(i, startIn);
+    if (sim.success) { foundPlan = { startIn, sim }; break; }
+  }
+
+  resultDiv.style.display = 'block';
+  if (!foundPlan) {
+    resultDiv.textContent = `❌ No feasible retirement found within ${maxYearsSearch} years under current assumptions. Try lowering spending, raising savings, or increasing returns.`;
+    return;
+  }
+
+  const retireAge = (i.age + foundPlan.startIn).toFixed(1);
+  resultDiv.innerHTML = `
+    ✅ Earliest retirement age: <strong>${retireAge}</strong><br/>
+    (Retire in <strong>${foundPlan.startIn} year(s)</strong> and your liquid assets never deplete through age ${i.lifeExpectancy}.)
+  `;
+
+  lastPath = foundPlan.sim.path; // store for chart/table/export
+  chartBtn.style.display = 'inline-block';
+  exportBtn.style.display = 'inline-block';
+  renderTable(lastPath, tableContainer);
+}
+
+function simulatePlan(i, startInYears) {
+  // Clone balances
+  let inv = i.investments;
+  let oth = i.otherAssets;
+  let k401 = i.k401Balance;
+  let re  = i.realEstate;
+
+  const path = [];
+  const startAge = i.age;
+  const retireAge = i.age + startInYears;
+  const maxAge = i.lifeExpectancy;
+
+  const annualSavings = i.income * i.savingsRate;
+
+  let yearIndex = 0;
+  for (let age = startAge; age <= maxAge; age += 1, yearIndex += 1) {
+    const isRetired = age >= retireAge;
+
+    // 1) Contributions (only before retirement): add to Investments
+    if (!isRetired && annualSavings > 0) {
+      inv += annualSavings;
+    }
+
+    // 2) Grow all buckets
+    inv *= (1 + i.investmentCagr);
+    oth *= (1 + i.otherAssetsCagr);
+    k401 *= (1 + i.k401Cagr);
+    re  *= (1 + i.realEstateCagr);
+
+    // 3) If retired, withdraw to cover inflation-adjusted spending
+    let withdrawnInv = 0, withdrawnOth = 0, withdrawn401 = 0;
+    let required = 0;
+    if (isRetired) {
+      // Spending inflated from TODAY (not from retirement start)
+      required = i.retirementSpending * Math.pow(1 + i.inflationRate, yearIndex);
+
+      // Withdraw order: Investments -> Other -> 401k (if age >= 59.5)
+      let need = required;
+
+      // Investments
+      const takeInv = Math.min(inv, need);
+      inv -= takeInv; need -= takeInv; withdrawnInv = takeInv;
+
+      // Other assets
+      if (need > 0) {
+        const takeOth = Math.min(oth, need);
+        oth -= takeOth; need -= takeOth; withdrawnOth = takeOth;
+      }
+
+      // 401k (if accessible)
+      if (need > 0 && age >= 59.5) {
+        const take401 = Math.min(k401, need);
+        k401 -= take401; need -= take401; withdrawn401 = take401;
+      }
+
+      // If still need > 0, plan fails
+      if (need > 0) {
+        return { success: false, reason: 'insufficient_liquidity', atAge: age };
+      }
+    }
+
+    // Record this year
+    const netWorth = inv + oth + k401 + re;
+    path.push({
+      age: +age.toFixed(1),
+      invested: inv,
+      other: oth,
+      k401: k401,
+      realEstate: re,
+      netWorth: netWorth,
+      requiredSpending: +required.toFixed(2),
+      withdrawnInv: +withdrawnInv.toFixed(2),
+      withdrawnOther: +withdrawnOth.toFixed(2),
+      withdrawn401k: +withdrawn401.toFixed(2),
+      retired: isRetired
+    });
+
+    // Safety: if any liquid bucket went negative due to precision, fail
+    if (inv < -1e-6 || oth < -1e-6 || k401 < -1e-6) {
+      return { success: false, reason: 'negative_balance', atAge: age };
+    }
+  }
+
+  // If we made it to life expectancy without failing, success
+  return { success: true, path };
+}
+
+function drawChart(path) {
+  if (!path || !path.length) return;
+  const ctx = document.getElementById('netWorthChart').getContext('2d');
+  document.getElementById('chartContainer').style.display = 'block';
+  if (chartInstance) { chartInstance.destroy(); }
+
+  const labels = path.map(p => p.age);
+  const net = path.map(p => p.netWorth);
+  const inv = path.map(p => p.invested);
+  const oth = path.map(p => p.other);
+  const k4  = path.map(p => p.k401);
+  const re  = path.map(p => p.realEstate);
+
+  chartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Net Worth ($)', data: net, borderWidth: 2, fill: false },
+        { label: 'Investments ($)', data: inv, borderWidth: 1, fill: false },
+        { label: 'Other Assets ($)', data: oth, borderWidth: 1, fill: false },
+        { label: '401k ($)', data: k4, borderWidth: 1, fill: false },
+        { label: 'Real Estate ($)', data: re, borderWidth: 1, fill: false },
+      ]
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: {
+          ticks: {
+            callback: v => '$' + Number(v).toLocaleString()
+          }
+        }
+      },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: $${Number(ctx.parsed.y).toLocaleString()}`
+          }
+        }
+      }
+    }
+  });
+}
+
+function renderTable(path, container) {
+  if (!path || !path.length) return;
+  const cols = [
+    ['Age','age'],
+    ['Net Worth ($)','netWorth'],
+    ['Investments ($)','invested'],
+    ['Other Assets ($)','other'],
+    ['401k ($)','k401'],
+    ['Real Estate ($)','realEstate'],
+    ['Req. Spending ($)','requiredSpending'],
+    ['From Inv ($)','withdrawnInv'],
+    ['From Other ($)','withdrawnOther'],
+    ['From 401k ($)','withdrawn401k'],
+    ['Retired?','retired']
+  ];
+
+  const toCell = (val) => (typeof val === 'number'
+      ? '$' + Number(val).toLocaleString(undefined,{maximumFractionDigits:0})
+      : String(val));
+
+  let html = '<table><thead><tr>';
+  cols.forEach(c => html += `<th>${c[0]}</th>`);
+  html += '</tr></thead><tbody>';
+
+  path.forEach(row => {
+    html += '<tr>';
+    cols.forEach(([label,key]) => {
+      let v = row[key];
+      if (key === 'age') {
+        html += `<td>${v}</td>`;
+      } else if (key === 'retired') {
+        html += `<td>${v ? 'Yes' : 'No'}</td>`;
+      } else if (typeof v === 'number') {
+        html += `<td>${'$' + Number(v).toLocaleString()}</td>`;
+      } else {
+        html += `<td>${v}</td>`;
+      }
+    });
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function exportCSV(path) {
+  if (!path || !path.length) return;
+  const headers = [
+    'Age','NetWorth','Investments','OtherAssets','401k','RealEstate',
+    'RequiredSpending','WithdrawnInvestments','WithdrawnOther','Withdrawn401k','Retired'
+  ];
+  const lines = [headers.join(',')];
+  path.forEach(p => {
+    lines.push([
+      p.age,
+      Math.round(p.netWorth),
+      Math.round(p.invested),
+      Math.round(p.other),
+      Math.round(p.k401),
+      Math.round(p.realEstate),
+      p.requiredSpending,
+      p.withdrawnInv,
+      p.withdrawnOther,
+      p.withdrawn401k,
+      p.retired ? 'Yes' : 'No'
+    ].join(','));
+  });
+  const blob = new Blob([lines.join('\n')], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'retirement_path.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
